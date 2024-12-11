@@ -1,37 +1,32 @@
-use strict; use warnings FATAL => 'all';
+ strict; use warnings FATAL => 'all';
 use v5.10;
 use utf8;
 # vi:set ai expandtab ts=4:
 
-#########################################################################
-# Wrapper for Text::Table which uses Unicode box-drawing characters for
-# borders and handles cells with embedded newlines.
-#########################################################################
 # Based on code in the Text::Table documentation and
 # https://stackoverflow.com/questions/30762521/how-can-i-print-a-table-with-multi-line-strings-using-the-texttable-module
 
 package Text::Table::Boxed;
 use base 'Text::Table';
 
+{ no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 997.999; }
+# VERSION from Dist::Zilla::Plugin::OurPkgVersion
+# DATE from Dist::Zilla::Plugin::OurDate
+
 use Carp;
 use Scalar::Util qw/reftype/;
-use List::Util qw/min max/;
-use List::MoreUtils qw/true false any none firstidx/;
+use List::Util qw/min max first all any/;
+use List::MoreUtils qw/true false none firstidx/;
 
 use overload (
     bool => sub { return 1; }, # Don't stringify just for a boolean test
     '""' => 'rendered_stringify',
 );
 
-use Data::Dumper::Interp qw/visnew dvis vis avis u/;
+use Data::Dumper::Interp qw/visnew ivis dvis vis avis u/;
 
-# Re-implement btw & oops instead of requiring Spreadsheet::Edit::Log
-sub btw {  # "by the way..."
-  my ($fname, $lno) = (caller(0))[1,2];
-  my $msg = join "", ($fname =~ s/.*[\/\\]//r), ":", $lno, " ", @_;
-  $msg .= "\n" unless $msg =~ /\R\z/;
-  warn $msg;
-}
+sub btw  { goto &Data::Dumper::Interp::btw }
+sub btwN { goto &Data::Dumper::Interp::btwN }
 sub oops { @_ = ("OOPS:",@_); goto &Carp::confess }
 
 our $debug = 0;
@@ -39,218 +34,212 @@ our $debug = 0;
 our %builtin_pictures = (
 
 ascii => <<'EOF',
-+-----------+
-| a | a | a |
-+===========+
-| a | a | a |
-+---+---+---+
-| a | a | a |
-+-----------+
++-------+
+| c | c |
++=======+
+| c | c |
++---+---+
+| c | c |
++-------+
 EOF
 
 boxrule => <<'EOF',
-┌───┬───┬───┐
-│ a │ a │ a │
-╞═══╪═══╪═══╡
-│ a │ a │ a │
-├───┼───┼───┤
-│ a │ a │ a │
-└───┴───┴───┘
+┌───┬───┐
+│ c │ c │
+╞═══╪═══╡
+│ c │ c │
+├───┼───┤
+│ c │ c │
+└───┴───┘
 EOF
 
 outerbox => <<'EOF',
-┌───────┐
-│ a a a │
-│ a a a │
-│ a a a │
-└───────┘
+┌─────┐
+│ c c │
+│ c c │
+│ c c │
+└─────┘
 EOF
 
 );
 
-sub parse_rulepicture($) {
+sub handle_rulepicture($) {
+  my $opts = shift;
+  $opts->{CONTENT_CHAR} //= 'c';
+  
+  # Get separate line strings sans final newline
   my @lines;
-  if (ref($_[0]) && reftype($_[0]) eq "ARRAY") {
-    @lines = @{ $_[0] };
+  if (ref($opts->{picture}) eq 'ARRAY') {
+    @lines = @{ $opts->{picture} };
+    foreach(@lines) { s/\R\z//; }
+  } else {
+    @lines = split /\R/, ($opts->{picture} // oops);
   }
-  elsif (! reftype($_[0])) {
-    @lines = map{ "$_\n" } split /\R/, $_[0];
+
+  if ($debug) { btw "--- INPUT PICRURE ---\n",(map{ "$_\n" } @lines),"---(end)---\n"; }
+
+  my sub _is_sepspec($) { $_[0] =~ /$opts->{CONTENT_CHAR}/ }
+  my sub _is_rule($)    { ! _is_sepspec($_[0]) }
+  my $first_rulespec;
+  my sub _push_rule($$) {
+    my ($aref, $spec) = @_;
+    croak "Rule lines must have the same length\n"
+      unless length($first_rulespec//=$spec) == length($spec);
+    push @$aref, $spec;
   }
-  else { croak "Invalid arg" }
 
-  if ($debug) { btw "--- INPUT ---\n", @lines, "---(end)---\n"; }
+  my (@top_rule, @mid_rule, @bot_rule);
 
-  my sub _is_sepspec($) { $_[0] =~ /\p{Alpha}/ }
-  my sub _is_rule($)    { $_[0] !~ /\p{Alpha}/ }
-
-  my ($top_rule, $aftertitle_rule, $mid_rule, $bot_rule);
-  my ($title_sepspec, $body0_sepspec, $bodyN_sepspec);
-
+  # Collect all rule strings (will later be split into segments)
   if (_is_rule($lines[-1])) {
-    $bot_rule = pop @lines;
+    _push_rule(\@bot_rule, pop @lines);
   }
   if (_is_rule($lines[0])) {
-    $top_rule = shift @lines;
+    _push_rule(\@top_rule, shift @lines);
   }
-  if (@lines == 0) {
-    croak "No content-separator spec line(s)" unless @lines;
-  }
-  if (@lines == 1) {
-    $title_sepspec = $body0_sepspec = $bodyN_sepspec = $lines[0];
-  }
-  elsif (@lines==3) {
-    $title_sepspec               = $lines[0];
-    $aftertitle_rule          = $lines[1];
-    $body0_sepspec = $bodyN_sepspec = $lines[2];
-  }
-  elsif (@lines==5) {
-    $title_sepspec               = $lines[0];
-    $aftertitle_rule          = $lines[1];
-    $body0_sepspec               = $lines[2];
-    $mid_rule                 = $lines[3];
-    $bodyN_sepspec               = $lines[4];
-  }
-  else {
-    croak "Invalid rulepicture\n","\@lines=",scalar(@lines);
+  croak "There must be at least one 'data line' in the picture\n" unless @lines;
+  foreach (@lines) {
+    _push_rule(\@mid_rule, $_) if _is_rule($_);
   }
 
-  my ($rule_len, $other_rule);
-  foreach ($top_rule, $aftertitle_rule, $mid_rule, $bot_rule) {
-    next unless defined;
-    croak "Expecting a rule line, not ",u($_),"\n" unless _is_rule($_);
-    croak "Empty rule line$\n" if length($_)==0;
-    if (defined $rule_len) {
-      croak "Rule lines must be same length\n(not ",vis($other_rule)," and ",vis($_),")\n"
-        if length($_) != $rule_len;
+  my ($sepspec_line, @sepsegs);
+  foreach (@lines) {
+    next if _is_rule($_);
+    
+    if (defined $sepspec_line) {
+      croak "All separator-sepc lines in the picture must be identical\n",
+            "(Text::Table does not support different seps in different rows)\n"
+        unless $_ eq $sepspec_line;
     } else {
-      $rule_len = length($_);
-      $other_rule = $_;
+      $sepspec_line = $_;
+      # Isolate separators and content-standin-chars
+      # e.g. ("| ", 'c', " | ", 'c', " |")
+      # or   ("",   'c', " | ", 'c', ""  ) if no edge-separators
+      pos=undef;
+      # split will provide the empty ("") segment we want where there is no
+      # edge separator (that, if CONTENT_CHAR is the first or last char).
+      # Note that the CONTENT_CHAR is in a (capture group) so is included
+      # as an element in the resultin list.
+      @sepsegs = split /($opts->{CONTENT_CHAR})/, $_, -1;
+      # Split rule strings at the same positions
+      foreach (@top_rule, @mid_rule, @bot_rule) {
+        my @rulesegs;
+        for (my $off=0, my $ix=0; $ix <= $#sepsegs; ) {
+          push @rulesegs, substr($_, $off, length($sepsegs[$ix]));
+          $off += length($sepsegs[$ix]);
+          ++$ix;
+        }
+        $_ = \@rulesegs;
+      }
     }
   }
-  foreach ($title_sepspec, $body0_sepspec, $bodyN_sepspec) {
-    croak "Expecting a content-separator spec line, not ",u($_),"\n"
-      if defined($_) && !_is_sepspec($_);
-  }
+  # Now rules are represented as [ list of substrings ]
+  # and "data" rows (which must be identical) similarly in @sepsegs
+  oops unless all{ scalar(@$_) == @sepsegs } @top_rule, @mid_rule, @bot_rule;
 
-  if ($debug) {
-    foreach my $name (qw/top_rule aftertitle_rule mid_rule bot_rule
-                         title_sepspec body0_sepspec bodyN_sepspec/) {
-      no strict 'refs';
-      my $val = eval "\$$name"; oops $@ if $@;
-      btw sprintf "%-15s = %s\n", $name, vis($val);
+  my $num_cols = @{ $opts->{columns} };
+  my $pic_cols = int(@sepsegs/2);
+btw dvis 'BEFORE PIC-LEN-ADJ: $num_cols $pic_cols @sepsegs\n@top_rule\n@mid_rule\n@bot_rule' if $debug; 
+  # Replicate the last picture column if the actual data is wider
+  # Delete the last picture column if the actual data is narrower
+  while ($num_cols != $pic_cols) {
+    # ("|-", '-', "+++", '+', "-|")  # a rule
+    # ("| ", 'c', " | ", 'c', " |")  # sepsegs
+    #             ^^^^^^^^^^ #replicate or delete these
+    #             $#-2   $#-1  $#
+    if ($pic_cols < $num_cols) {
+      croak "Picture must have three columns if data has >= three columns\n"
+        if $pic_cols < 3; # no separator to replicate
+      foreach (\@sepsegs, @top_rule, @mid_rule, @bot_rule) {
+        splice @$_, $#$_, 0, @$_[$#$_-2..$#$_-1];
+      }
+      ++$pic_cols;
+    } else {
+      foreach (\@sepsegs, @top_rule, @mid_rule, @bot_rule) {
+        splice @$_, $#$_-2, 2
+      }
+      --$pic_cols;
     }
   }
 
-  foreach ($title_sepspec, $body0_sepspec, $bodyN_sepspec) {
-    chomp;
-    # "a │ a │ a"     --> ["",   " │ ", " │ ", ""  ]
-    # "| a │ a │ a |" --> ["| ", " │ ", " │ ", " |"]
-    $_ = [ split /\p{Alpha}/, $_,-1 ];
-  }
-  btw dvis '$bodyN_sepspec' if $debug;
-  unless ("@$body0_sepspec" eq "@$bodyN_sepspec") {
-    # These both exist in a picture just to distinguish a mid-rule, if present.
-    # Text::Table does not support different horizontal separators for
-    # different body rows (only the title row may have different separators).
-    croak "All body rows must use the same separators\n";
-  }
+btw dvis 'AFTER  PIC-LEN-ADJ: @sepsegs\n@top_rule\n@mid_rule\n@bot_rule' if $debug; 
+  
+  # Insert the separators among the column titles
+  # The last separator always goes on the right edge (possibly "").
+  my @withseps = map{ 
+    ( \( $sepsegs[$_*2] // oops ), $opts->{columns}->[$_] )
+  } 0..$#{$opts->{columns}};
+  push @withseps, \$sepsegs[-1];
+
   # RULE GENERATORS
   # Each rule generator uses a pair of callbacks, herein called the "field"
-  # and "separator" callbacks.  Each provides characters to put into a rule
+  # and "separator" callbacks,  Each provides characters to put into a rule
   # line which will be under/over a field or separator string, respectively.
-  #
-  # The callback arguments are ($index, $num_chars)
+  # The arguments to the callback are ($index, $num_chars).
   #
   # For the "field callback", $index counts *fields*.
   #
-  # For the "separator callback", $index is intended to count *characters* in
-  # the concatnation of all separator strings, but **IS UNPREDICTABLE**
-  # in some cases due to a bug in Text::Table
-  #   See https://github.com/shlomif/Text-Table/issues/13
+  # For the "separator callback", $index is not useful due to this bug:
+  # https://github.com/shlomif/Text-Table/issues/14 .
+  # However the callbacks step through all the characters in the separators
+  # left-to-right (sometimes multiple characters at once), so a state variable
+  # can be used to know the next horizontal position.  $index is used
+  # only to recognize the initial call ($index==0) and reset the state.
   #
-  # To work around this, state variables are used to count characters ourself.
-  # This assumes callbacks occur in left-to-right order (verified by looking
-  # at the code).  The state variables are reset whenever $index==0 is seen.
-  #
-  foreach ($top_rule, $aftertitle_rule, $mid_rule, $bot_rule) {
-    next unless defined;
-    chomp;
-    my $rulestr = $_;
-
-    # Consider this definition with a strange toprule:   <%#%%++-***.&&.>
-    # The rule charaters over/under FIELDS are           │ t  ║ t │ t   │
-    # '#', '-', and '.'.  We need to save a list of just the single
-    # characters from the rule-spec corresponding to the field-data
-    # stand-in letters.  The $index callback parameter will select one.
-    #
-    # The other characters are under/over SEPARATORS.  In this example the
-    # separator sub strings are         "│ ", "  ║ ", " │ ", and "   │" and the
-    # corresponding rule characters are "<%", "%%++", "***", and "&&.>".
-    # We need to save the concatnation of those corresponding characters,
-    # which can be indexed using $index passed to the callback.
-
-    # All separator specification must have identically-sized separators,
-    # so it does not matter which one we look at:
-    #
-    my $concat_seprule_chars = "";
-    my @field_rule_chars; # array of single characters
-    my $rule_ix = 0;
-    pos($rulestr) = 0;
-    foreach (@$bodyN_sepspec) {
-      my $sep_len = length($_);
-      $concat_seprule_chars .= substr($rulestr, $rule_ix, $sep_len);
-      $rule_ix += $sep_len;
-      $rulestr =~ /\G.{$sep_len}(.?)/g or oops dvis '$rulestr $sep_len';
-      push @field_rule_chars, $1;
-      $rule_ix += length($1); # 1 except 0 at the very end
+  for my $key (qw/top_rule mid_rule bot_rule/) {
+    $opts->{$key} = [];
+    foreach my $rule_segs (eval "\@$key") { die $@ if $@;
+      # Rule and "data" lines in the picture have been split into arrays
+      # of pieces corresponding to separators and CONTENT_CHAR characters.
+      # A "field" rule segment is recognizable because the corresponding 
+      # element in @sepsegs is the CONTENT_CHAR.
+      my $field_chars = "";
+      my $sep_chars = "";
+      oops unless @$rule_segs == @sepsegs;
+      for my $ix (0..$#$rule_segs) {
+        if ($sepsegs[$ix] eq $opts->{CONTENT_CHAR}) {
+          $field_chars .= $rule_segs->[$ix];
+        } else {
+          $sep_chars .= $rule_segs->[$ix];
+        }
+      }
+btw dvis 'xxxx $key $field_chars $sep_chars $rule_segs @sepsegs\n       @withseps' if $debug;
+      oops unless length($field_chars) == $num_cols;
+      my $field_callback = sub {
+          my ($index, $len) = @_;
+          my $char = substr($field_chars,$index,1);
+          my $str = $char x $len;
+          warn "-fld- [$index] len=$len returning '$str'\n" if $debug;
+          return $str;
+      };
+      my $separator_callback = sub {
+          my ($index, $len) = @_;
+          state $char_ix;
+          $char_ix = 0 if $index==0;
+          my $str = substr($sep_chars, $char_ix, $len);
+          $char_ix += $len;
+          warn "=SEP= [$index] len=$len returning '$str'\n" if $debug;
+          oops dvis '$sep_chars $index $len $str $char_ix'
+            unless length($str) == $len;
+          return $str;
+      };
+      # Save the subrefs and debug info
+      push @{ $opts->{$key} }, {
+        sub1 => $field_callback, 
+        sub2 => $separator_callback,
+        sep_chars => $sep_chars,
+        field_chars => $field_chars,
+      };
     }
-btw dvis 'BBB @field_rule_chars $concat_seprule_chars pos(rulestr)=',u(pos($rulestr)) if $debug;
-
-    my $field_callback = sub {
-        my ($index, $len) = @_;
-        my $char = $field_rule_chars[$index] // oops;
-        warn "-fld- [$index] len=$len returning '$char'\n" if $debug;
-        return ( $char x $len );
-    };
-    my $separator_callback = sub {
-        my ($index, $len) = @_;
-        state $char_ix;
-        $char_ix = 0 if $index==0;
-        my $str = substr($concat_seprule_chars, $char_ix, $len);
-        $char_ix += $len;
-        warn "=SEP= [$index] len=$len returning '$str'\n" if $debug;
-        return $str;
-    };
-    # replace the rule with the pair of subrefs
-    $_ = [ $field_callback, $separator_callback ];
   }
-  return {
-    top_rule => $top_rule,
-    aftertitle_rule => $aftertitle_rule,
-    mid_rule => $mid_rule,
-    bot_rule => $bot_rule,
-    title_sepspec => $title_sepspec,
-    # body0_sepspec => $body0_sepspec,  # not supported by Text::Table
-    # bodyN_sepspec => $bodyN_sepspec,  # not supported by Text::Table
-  }
-}#parse_rulepicture
-
-sub insert_seps($$) {
-  my ($hash, $columns) = @_;
-  my $specs = $hash->{title_sepspec} // oops;
-  my @withseps = (
-    map{ ( \($_ < $#$specs-1 ? $specs->[$_] : $specs->[-2]), $columns->[$_] ) }
-       0..$#$columns
-  );
-  push @withseps, \$specs->[-1];
-  return @withseps;
-}
+  $opts->{withseps} = \@withseps;
+}#handle_rulepicture
 
 use constant MYKEY => "_key_".__PACKAGE__;
 sub new {
   my $class = shift;
   my %opts = (@_==1 && ref($_[0]) eq "HASH" && exists($_[0]->{columns}))
-      ? shift(@_)            # new API
+      ? %{ shift(@_) }       # new API
       : ( columns => [@_] ); # old API
 
   croak "'columns' must be provided in OPTIONS\n"
@@ -263,46 +252,42 @@ sub new {
   if (defined $opts{style}) {
       $opts{picture} = $builtin_pictures{ $opts{style} }
         // croak "Invalid 'style' \"$opts{style}\"\n";
+      delete $opts{CONTENT_CHAR};
   }
 
-  my $hash = parse_rulepicture($opts{picture});
-  my @titles_with_separators = insert_seps($hash, $opts{columns});
-  my $self = Text::Table::new(__PACKAGE__, @titles_with_separators);
+  # Parse the picture. 
+  # Creates {withseps} and {rule_generators} in %opts
+  handle_rulepicture(\%opts);
 
-  # Now actually render the rules using the generated callbacks
-  foreach (qw/top_rule aftertitle_rule mid_rule bot_rule/) {
-    # This anticipates multiple-midrule support in the future
-    my $gen = $hash->{$_};
-    #next unless defined($gen);
-    my @generators = ref($gen->[0]) eq "ARRAY" ? @$gen : ($gen);
-    my @rendered_rules = map{
-      my ($field_callback, $separator_callback) = @$_;
-      $self->rule($field_callback, $separator_callback);
-    } @generators;
-    $opts{$_} = @rendered_rules > 1 ? \@rendered_rules : $rendered_rules[0];
-  }
+  my $self = Text::Table::new(__PACKAGE__, @{ $opts{withseps} });
 
   $opts{row_starts} = [ 0 ];
   $opts{next_rx} = $self->title_height;
 
-  $self->{MYKEY} = \%opts;
+  $self->{MYKEY()} = \%opts;
   $self
 }#new
 
-sub top_rule { $_[0]->{MYKEY}->{top_rule} }
-sub aftertitle_rule { $_[0]->{MYKEY}->{top_rule} }
-sub mid_rule {
-    for ($_[0]->{MYKEY}->{mid_rule}) {
-       my @rules = ref($_) eq "ARRAY" ? @$_ : ($_);
-       if (wantarray) { return @rules }
-       croak "mid_rule called in scalar context but multiple were defined"
-         if @rules > 1;
-       return $rules[0];
-    }
+sub _TTBrule {
+  my ($key, $self, $ix) = @_;
+  $ix //= 0;
+  return undef 
+    unless my $list = $self->{MYKEY()}->{"${key}_rule"};
+  $list = [ $list ] unless ref($list) eq "ARRAY"; # [ {...}, ... ]
+  return undef 
+    if $#$list == -1; # _no_ mid rules at all
+  # If asking for a higher index than exists, re-use the last one.
+  # This is appropriate for multiple mid_rules.
+  my $h = $ix > $#$list ? $list->[-1] : $list->[$ix];
+  my $r = $self->rule($h->{sub1}, $h->{sub2});
+  $r
 }
-sub bottom_rule { $_[0]->{MYKEY}->{bot_rule} }
 
-sub num_rows { scalar @{ $_[0]->{MYKEY}->{row_starts} } }
+sub top_rule { _TTBrule("top", @_) }
+sub mid_rule { _TTBrule("mid", @_) }  # takes optional index argument
+sub bot_rule { _TTBrule("bot", @_) }
+
+sub num_rows { scalar @{ $_[0]->{MYKEY()}->{row_starts} } }
 
 sub num_body_rows { $_[0]->num_rows() - 1 }
 
@@ -317,7 +302,7 @@ sub rendered_table_height {
 
 sub add {
     my $self = shift;
-    my $opts = $self->{MYKEY};
+    my $opts = $self->{MYKEY()};
 
     # Calculate height of the row, taking into account embedded newlines
     # (which Text::Table will split, inserting multiple lines)
@@ -342,7 +327,7 @@ sub rows {
     my ($self, $row_index, $num_rows, $_with_rules) = @_;
     $row_index //= 0;
     $num_rows //= 1;
-    my $opts = $self->{MYKEY};
+    my $opts = $self->{MYKEY()};
     my $row_starts = $opts->{row_starts};
     croak "Negative index not supported\n" if $row_index < 0 or $num_rows < 0;
     my $max_rx = $#{ $row_starts };
@@ -350,24 +335,24 @@ sub rows {
       if $row_index+$num_rows-1 > $max_rx;
 
     my @results = map{
-       my $first_lx = $row_starts->[$_];
-       my $nextrow_first_lx =
-           ($_ == $max_rx ? $self->height() : $row_starts->[$_+1]);
-       my $num_lines = $nextrow_first_lx - $first_lx;
-
-       [
-         (($_with_rules && $_ == 0) ? $opts->{top_rule} : ()),
-
-         $self->table($first_lx, $num_lines),
-
-         ($_with_rules ?
-           ($_ == 0        ? $opts->{aftertitle_rule} :
-            $_ == $max_rx ? $opts->{bot_rule} :
-                             $opts->{mid_rule}
-           ) : ()
-         )
-       ]
+        my $first_lx = $row_starts->[$_];
+        my $nextrow_first_lx =
+            ($_ == $max_rx ? $self->height() : $row_starts->[$_+1]);
+        my $num_lines = $nextrow_first_lx - $first_lx;
+ 
+        my @lines = $self->table($first_lx, $num_lines);
+        if ($_with_rules) {
+          if ($_ == 0 && defined(my $str = $self->top_rule())) {
+            unshift @lines, $str;
+          }
+          if (defined(my $str = $_==$max_rx ? $self->bot_rule()
+                                            : $self->mid_rule($_))) {
+            push @lines, $str;
+          }
+        }
+        [ @lines ]
     } $row_index..$row_index+$num_rows-1;
+btw dvis '##ROWS($row_index $num_rows $_with_rules) $max_rx --> @results' if $debug;
 
     if (wantarray) { return @results; }
     croak "Scalar context but multiple rows in results\n"
@@ -402,16 +387,17 @@ sub rendered_rows {
 
 sub rendered_table {
     my ($self, $start_lx, $num_lines) = @_;
-    $start_lx //= 0;
-    $num_lines //= 1;
-    my $opts = $self->{MYKEY};
+    my $opts = $self->{MYKEY()};
     my $row_starts = $opts->{row_starts};
-
-    croak "Negative index not supported\n" if $start_lx < 0 or $num_lines < 0;
     my $max_lx = $self->rendered_table_height() - 1;
-    my $last_lx = $start_lx + $num_lines;
+
+    $num_lines //= ($max_lx + 1);
+    $start_lx //= 0;
+    croak "Negative index not supported\n" if $start_lx < 0 or $num_lines < 0;
+
+    my $last_lx = $start_lx + $num_lines - 1;
     croak "Line index $start_lx+$num_lines-1 is out of range (max=$max_lx)\n" 
-      if $start_lx+$num_lines-1 > $max_lx;
+      if $last_lx > $max_lx;
 
     # Retrieve rows and flatten result, truncating some lines if appropraite
 
@@ -420,15 +406,22 @@ sub rendered_table {
                      : first{ $last_lx >= $row_starts->[$_] }
                        reverse(0..$#$row_starts-1) ;
 
+btw dvis 'REND($start_lx, $num_lines) $row_starts $max_lx $last_lx $last_rx' if $debug;
+
     my $first_rx = $start_lx >= $row_starts->[$last_rx]
                      ? $last_rx
-                     : first{ $start_lx < $row_starts->[$_+1] } 0..$last_rx-1 ;
+                     #: first{ $start_lx < $row_starts->[$_+1] } 0..$last_rx-1 ;
+                     : first{ 
+  #btw '##INfirst last_rx=',vis($last_rx),' $_=',vis($_);
+                          $start_lx < $row_starts->[$_+1] } 0..$last_rx-1 ;
 
     my @lines = (
         map{ @$_ } $self->rendered_rows($first_rx, $last_rx-$first_rx+1)
     );
+btw dvis '##REND.B $last_lx $start_lx $num_lines @lines' if $debug;
     splice @lines, $last_lx-$start_lx+1; # trunc undesired lines from last row
 
+btw dvis '##REND.C @lines' if $debug;
     return (wantarray ? @lines : join("", @lines));
 }
 
@@ -482,55 +475,50 @@ Text::Table::Boxed - Automate separators and rules for Text::Table
     │ a ║ a │ a │
     ╘═══╩═══╧═══╛
     EOF
-    );
+    });
 
-    # Retrieve the lines in the title, including rules before and after
-    my @lines = $tb->rendered_title();
+    my @lines = $tb->rendered_title();  # including rules
+    my @lines = $tb->rendered_table();  # including rules
 
     # Retrieve rows, each of which is an array of possibly-multiple lines,
-    # the last of which is a rule line.
-    my @linesets = $tb->rendered_body_rows($row_index, $num_rows);
+    # the last of which is a rule line if appropriate.
+    my $lineset  = $tb->rendered_title();
+    my @linesets = $tb->rendered_body_rows($body_row_index, $num_rows);
 
 =head1 DESCRIPTION
 
 This wrapper for L<Text::Table> automates column separators
-and horizontal rules, taking into account cells containing
-embedded newlines lines.
+and horizontal rules.  Embedded newlines are allowed in cell data.
 
-Support for ASCII or Unicode box-drawing characters is built in.
-Custom ruling can be specified using an "ascii art" picture of what you want.
+Support for ASCII or Unicode box-drawing characters is built in,
+or you can give an "ascii art" picture showing what you want.
 
-B<Text:Table::Boxed> is a derived class and
-supports all the methods of Text::Table.
+B<Text:Table::Boxed> is a derived class of Text::Table and supports all of
+it's methods.
 C<new> supports a different API where a single hashref argument supplies
 column descriptors in a 'columns' element, along with possibly other options.
 
 =head1 ROWS
 
 The concept of "B<row>" is introduced, which represents a possibly-multiline
-table row.  Rules are inserted only between I<rows>, not between lines
-within a multi-line row.  Multi-line rows exist where cell values
+table row.  Rules are inserted only at row boundaries, not between lines
+within a row.  Multi-line rows exist where cell values
 contain embedded newlines.
-
-The height of a row is the number of lines in the cell with the most
-embedded newlines.
 
 Methods with "B<row>" in their name return lines segregated into rows, each
 row represented by an array of the constituent lines.
 In contrast, similar methods without "row" in their name return a flat
-list of lines (or in scalar context, a single possibly-multiline string).
+list of lines (or in scalar context, a single ultiline string).
 
 Methods with "B<rendered>" in their name include I<rule lines> in their
 result.  For example B<rendered_table()> returns all lines in the table
 including rule lines, whereas B<table()> omits rule lines.
 
-I<Rules> are inserted when B<rendered_*()> methods are called, however
-I<separators>, i.e. characters between columns and at the edges,
-are inserted into the column descriptor list by 'new' and so exist in the
-underlying L<Text::Table> object.  Consequently methods like B<table()>
-include horizontal separator characters (but not rule lines), and the
-B<width()> returns the number of characters in each line including
-separators.
+I<Rules> are inserted only when B<rendered_*()> methods are called, however
+I<separators>, i.e. characters between columns and at the edges of data rows,
+are always present because they
+are inserted among the original columns by 'new' and exist in the
+underlying L<Text::Table> object.
 
 =head1 OPTIONS
 
@@ -546,39 +534,35 @@ Separators should not be included here.
 
 Use a built-in set of separator and rule characters.
 
+=item B<picture> => "Multi\nLine\nString"; 
+
 =item B<picture> => [ lines ];
 
-Specify separators and rule lines using a picture of what you want
+Specify separator and rule-line characters using a picture of what you want
 (see example in the SYNOPSIS).
 
-"Rule" lines contain exactly what should be displayed for a table
-the same size as the picture.  Characters are replicated as needed to fit
-the actual column widths.
+The letter 'c' is a stand-in for cell content; all other characters in
+"data" rows are taken as separators including spaces 
+(typically included for padding).
 
-"Data" lines use any single alphabetic letter as a stand-in for cell content;
-other characters are taken as separators including any spaces (e.g. for
-padding).  Separators are inserted between the columns and at the edges.
+"Rule" lines should be exactly what would be displayed for a table
+the same size as the picture.  Portions are replicated as needed to fit
+the actual table.
 
-The picture should have two or more columns so that it has between-cell
-separators.  If more columns are included, different separators may be
-before each columns (the last between-col separator in the picture
-will be used for additional columns in the real table).
+The picture must contain at least two columns; with more columns
+different separators may be specified at various horizontal positions
+(however the same separator must be used in every 
+data row in a given column).
+The separator between the last two columns is re-used if the table has
+more columns than the picture.
 
-Four rules may be specified:
+Similarly, the picture must contain at least rows and 
+the rule between the last two rows is re-used if the actual table has more
+rows than the picture.  
+Often pictures have three rows to allow a different separator
+between the title row and the first body row.
 
-=over 4
-
-=item * Top rule (optional)
-
-=item * After-title rule (if omitted, the Mid rule is used)
-
-=item * Mid rule, used between body rows
-
-=item * Bottom rule (optional)
-
-=back
-
-See "PICTURE SPECIFICATIONS" for more.
+See "PICTURE SPECIFICATIONS" for examples.
 
 =back
 
@@ -607,6 +591,28 @@ The number of lines in the title I<row>, including rules before and after
 
 =over 4
 
+=item rendered_stringify()
+
+Returns the entire table as a single string including rule lines.
+This is the same as B<rendered_table()> but returns a string even in
+array context.
+
+The object also stringifies to the same result using operator overloading.
+
+    $string = $tb->rendererd_stringify()
+    $string = $tb;  # same result
+
+=item rendered_table()
+
+Like C<table()> but includes rule lines.
+
+    $line  = $tb->rendered_tables($line_index);  # one line
+    @lines = $tb->rendered_tables;               # all lines
+    @lines = $tb->rendered_tables($line_index, $num_tables);
+
+Line index 0 is the top rule line,
+index 1 is the first "real" title line (if there is a title), etc.
+
 =item body_rows()
 
 =item rendered_body_rows()
@@ -618,42 +624,16 @@ B<rendered_body_rows()> includes a rule line as the last line in each row.
 
 Row index 0 is the first body row.
 
-    @linesets = $tb->rendered_body_rows;
+    $lineset  = $tb->rendered_body_rows($row_index);  # one row
+    @linesets = $tb->rendered_body_rows;              # all rows
     @linesets = $tb->rendered_body_rows($row_index, $num_rows);
-    $lineset  = $tb->rendered_body_rows($row_index);
 
 =item title_row()
 
 =item rendered_title_row()
 
 Returns a row representation (i.e. array ref) for the title row.
-The title row will contain multiple lines if title cell values had
-embedded newlines.
-
-  $lineset = $tb->title_row
-  $lineset = $tb->rendered_title_row
-
-=item rendered_table()
-
-Like C<table()> but includes rule lines.
-
-    @lines = $tb->rendered_table;
-    @lines = $tb->rendered_table($line_index, $num_lines);
-    $line  = $tb->rendered_table($line_index, $num_lines);
-
-Line index 0 is the initial rule line,
-index 1 is the first "real" title line (if there is a title), etc.
-
-=item rendered_stringify()
-
-Returns the entire table as a single string including rule lines.
-This is the same as B<rendered_table()> but returns a string even in
-array context.
-
-The object also stringifies to the same result using operator overloading.
-
-    $string = $tb->rendererd_stringify()
-    $string = $tb;  # same result
+This is the same as B<row(0)> or B<rendered_row(0)>.
 
 =item rendered_title()
 
@@ -673,77 +653,122 @@ after each row.  Row index 0 is the first line of the first body row.
 
 =item bottom_rule()
 
-These return the corresponding rendered rule lines.   You normally do not
-call these yourself because the rules are automatically included by
-the "rendered_xxx" methods
+These return the corresponding rendered rule lines.   
+You normally do not call these yourself because rules are 
+automatically included by the "rendered_xxx" methods
+
+C<mid_rule()>
+returns an array ref if more than one mid-rule was in the picture.
 
 =back
 
 =head1 PICTURE SPECIFICATIONS
 
 Custom separators and rules are specified as a "picture" built from several
-lines.  Here are examples:
+lines.  Four kinds of rules may be included: 
 
-    ┌─╥─┬─┐   ┌───╥───┬───┐   =============  ⇦  top rule
-    │t║t│t│   │ t ║ t │ t │   | a | a | a |
-    ╞═╬═╪═╡   ╞═══╬═══╪═══╡   |===+===+===|  ⇦  after-title rule
-    │a║a│a│   │ b ║ c │ d │   | b | b | b |
-    ├─╫─┼─┤   ├───╫───┼───┤   |---+---+---|  ⇦  mid rule (used only when
-    │a║a│a│   │ e ║ f │ g │   | z | z | z |       another body row follows)
-    ╘═╩═╧═╛   ╘═══╩═══╧═══╛   =============  ⇦  bottom rule
+=over 4
 
-Single alphabetic letters are stand-ins for real content. Everything
-between those letters or at the edge is a separator string.
-In the first example, the column separators are single characters, so there
-is no padding around content.  In the others the separators are two or three
-characters each including spaces for padding, e.g. "|␠", "␠|␠" or "␠|".
+=item * Top rule (optional)
+
+=item * Special rule(s) used only at the indicated initial position(s)
+
+=item * Default mid rule, used between other body rows 
+
+=item * Bottom rule (optional)
+
+=back
+
+Pictures must have at least two rows and columns: 
+
+    ┌───┬───┐   /=======\  ⇦  top rule
+    │ c │ c │   | c | c |
+    ├───┼───┤   |---+---|  ⇦  default mid rule
+    │ c │ c │   | c | c |     
+    ╘═══╧═══╛   \=======/  ⇦  bottom rule
+
+The letter 'B<I<c>>' is a stand-in for real content. Everything 
+between 'B<I<c>>'s or at the edge is a separator string.
+
+With more than two picture rows, special rules are used where indicated
+among the upper rows in the table.
+The last interior rule is the "default" rule, used between further rows
+if there are any.  And analogously for columns:
+
+              ⮦ Left-edge separator 
+              ⏐   ⮦ Special separator
+              ⏐   ⏐   ⮦ Default separator
+              ↓   ↓   ↓   ⮦ Right-edge separator
+    ┌─╥─┬─┐   ┌───╥───┬───┐   ==============  ⇦  top rule
+    │c║c│c│   │ c ║ c │ c │   | c || a | c |
+    ╞═╬═╪═╡   ╞═══╬═══╪═══╡   |===++===+===|  ⇦  special rule after title
+    │c║c│c│   │ c ║ c │ c │   | c || c | c |
+    ┝━╋━┿━┥   ┝━━━╋━━━┿━━━┥   |___||___|___|  ⇦  special after 1st body row
+    │c║c│c│   │ c ║ c │ c │   | c || c | c |       
+    ├─╫─┼─┤   ├───╫───┼───┤   |---++---+---|  ⇦  default rule 
+    │c║c│c│   │ c ║ c │ c │   | c || c | c | 
+    ╘═╩═╧═╛   ╘═══╩═══╧═══╛   ==============  ⇦  bottom rule
+
+In the leftmost example, column separators are single characters
+so there is no padding around content.  In the others the separators are
+two or three characters each including spaces for padding, e.g. "|␠",
+"␠|␠" or "␠|".
 
 Outer borders can be omitted:
 
-    t║t│t    t ║ t │ t     t | t | t
-    ═╬═╪═   ═══╬═══╪═══   ===+===+===   ⇦  after-title rule
-    a║a│a    b ║ b │ b     b | b | b
-    ─╫─┼─   ───╫───┼───   ---+---+---   ⇦  mid rule
-    a║a│a    z ║ z │ z     z | z | z       (if another body row follows)
+    c║c│c    c ║ c │ c     c | c | c
+    ═╬═╪═   ═══╬═══╪═══   ===+===+=== 
+    c║c│c    c ║ c │ c     c | c | c
+    ─╫─┼─   ───╫───┼───   ---+---+--- 
+    c║c│c    c ║ c │ c     c | c | c
 
-To get only outer borders, omit the interior rules, and use interior
-separators containing only spaces (unless you want cell contents to touch):
+To get only outer borders, omit the interior rules and use interior
+separators containing only spaces (unless you want cells to touch):
 
-    ┌─────┐   ┌─────────┐   ===========
-    │t t t│   │ t  t  t │    t | t | t
-    │a a a│   │ b  b  b │    b | b | b
-    │a a a│   │ z  z  z │    z | z | z
-    ╘═════╛   ╘═════════╛   ===========
+    ┌───┐   ┌─────┐   =======
+    │c c│   │ c c │   | c c |
+    │c c│   │ c c │   | c c |
+    │c c│   │ c c │   | c c |
+    ╘═══╛   ╘═════╛   =======
 
-B<RENDERING DEGENERATE DATA:>
+B<RENDERING EXAMPLES>
 
-If there is only a single 'body' row, the table is rendered with the
-bottom rule immediately following the body row:
+If there are more actual rows and/or columns than in the picture, 
+the "default" rule and/or column separator is repeated:
+
+    Picture    Rendered Actual Table
+    ┌─╥─┬─┐    ┌──────╥─────┬──────────┬────────────┐ ⇦  top rule
+    │c║c│c│    │ NAME ║ AC  │ NUMBER   │ Pet's Name │
+    ╞═╬═╪═╡    ╞══════╬═════╪══════════╪════════════╡ ⇦  special rule
+    │c║c│c│    │ Sam  ║ 800 │ 555-1212 │  Cutesy    │
+    ├─╫─┼─┤    ├──────╫─────┼──────────┼────────────┤ ⇦  default rule
+    │c║c│c│    │ Mary ║ 880 │ 123-4567 │  Killer    │
+    ╘═╩═╧═╛    ├──────╫─────┼──────────┼────────────┤ ⇦  default rule
+               │ Don  ║ 880 │ 123-4567 │  Tweetie   │
+               ├──────╫─────┼──────────┼────────────┤ ⇦  default rule
+               │ Mico ║ 880 │ 123-4567 │  Tabby     │
+               ╘══════╩═════╧══════════╧════════════╛ ⇦  bottom rule
+
+The edge separators are always used, as are the top & bottom rules (if defined),
+even if there are fewer rows or columns than in the picture:
+
+    ┌───┰───┬───┐    ┌───────┐ ⇦  top rule         
+    │ c ║ c │ c │    │Meaning│                     
+    ┝━━━╋━━━┿━━━┥    │of life│                     
+    │ c ║ c │ c │    ┝━━━━━━━┥ ⇦  special after-title rule 
+    ├───╫───┼───┤    │  42   │                     
+    │ c ║ c │ c │    ╘═══════╛ ⇦  bottom rule      
+    ╘═══╩═══╧═══╛                                  
+
+If there is a title row but no body rows, 
+only the top and bottom rules are used:
 
     ┌──────╥─────┬────────────┐ ⇦  top rule
     │ NAME ║ AC  │  NUMBER    │
-    ╞══════╬═════╪════════════╡ ⇦  after-title rule
-    │ Sam  ║ 800 │  555-1212  │
     ╘══════╩═════╧════════════╛ ⇦  bottom rule
 
-If there are no 'body' rows, the after-title rule is omitted:
-
-    ┌──────╥─────┬────────────┐ ⇦  top rule
-    │ NAME ║ AC  │  NUMBER    │
-    ╘══════╩═════╧════════════╛ ⇦  bottom rule
-
-If there is no title, the top rule immediately precedes the first body row:
-
-    ┌──────╥─────┬────────────┐  ⇦  top rule
-    │ Sam  ║ 800 │  555-1212  │
-    ├──────╫─────┼────────────┤  ⇦  mid rule
-    │ Mary ║ 707 │  123-4567  │
-    ╘══════╩═════╧════════════╛  ⇦  bottom rule
-
-A completely-empty table renders as only the top and bottom rules:
-
-    ┌──────╥─────┬────────────┐
-    ╘══════╩═════╧════════════╛
+If there are no titles or data, nothing is rendered 
+e.g. the object stringifies to "".
 
 =head1 PAGER EXAMPLE
 
