@@ -255,6 +255,10 @@ sub new {
       ? %{ shift(@_) }       # new API
       : ( columns => [@_] ); # old API
 
+  foreach (keys %opts) {
+    croak "Invalid option key '$_'\n" unless /^(?:columns|picture|style)$/;
+  }
+
   croak "'columns' must be provided in OPTIONS\n"
     unless defined ($opts{columns});
   croak "'columns' must be an array ref\n"
