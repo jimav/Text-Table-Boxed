@@ -63,10 +63,10 @@ EOF
 
 );
 
-sub handle_rulepicture($) {
+sub _handle_rulepicture($) {
   my $opts = shift;
   $opts->{CONTENT_CHAR} //= 'c';
-  
+
   # Get separate line strings sans final newline
   my @lines;
   if (ref($opts->{picture}) eq 'ARRAY') {
@@ -105,7 +105,7 @@ sub handle_rulepicture($) {
   my ($sepspec_line, @sepsegs);
   foreach (@lines) {
     next if _is_rule($_);
-    
+
     if (defined $sepspec_line) {
       croak "All separator-sepc lines in the picture must be identical\n",
             "(Text::Table does not support different seps in different rows)\n"
@@ -139,7 +139,7 @@ sub handle_rulepicture($) {
 
   my $num_cols = @{ $opts->{columns} };
   my $pic_cols = int(@sepsegs/2);
-btw dvis 'BEFORE PIC-LEN-ADJ: $num_cols $pic_cols @sepsegs\n@top_rule\n@mid_rule\n@bot_rule' if $debug; 
+btw dvis 'BEFORE PIC-LEN-ADJ: $num_cols $pic_cols @sepsegs\n@top_rule\n@mid_rule\n@bot_rule' if $debug;
   # Replicate the last picture column if the actual data is wider
   # Delete the last picture column if the actual data is narrower
   while ($num_cols != $pic_cols) {
@@ -162,11 +162,11 @@ btw dvis 'BEFORE PIC-LEN-ADJ: $num_cols $pic_cols @sepsegs\n@top_rule\n@mid_rule
     }
   }
 
-btw dvis 'AFTER  PIC-LEN-ADJ: @sepsegs\n@top_rule\n@mid_rule\n@bot_rule' if $debug; 
-  
+btw dvis 'AFTER  PIC-LEN-ADJ: @sepsegs\n@top_rule\n@mid_rule\n@bot_rule' if $debug;
+
   # Insert the separators among the column titles
   # The last separator always goes on the right edge (possibly "").
-  my @withseps = map{ 
+  my @withseps = map{
     ( \( $sepsegs[$_*2] // oops ), $opts->{columns}->[$_] )
   } 0..$#{$opts->{columns}};
   push @withseps, \$sepsegs[-1];
@@ -191,7 +191,7 @@ btw dvis 'AFTER  PIC-LEN-ADJ: @sepsegs\n@top_rule\n@mid_rule\n@bot_rule' if $deb
     foreach my $rule_segs (eval "\@$key") { die $@ if $@;
       # Rule and "data" lines in the picture have been split into arrays
       # of pieces corresponding to separators and CONTENT_CHAR characters.
-      # A "field" rule segment is recognizable because the corresponding 
+      # A "field" rule segment is recognizable because the corresponding
       # element in @sepsegs is the CONTENT_CHAR.
       my $field_chars = "";
       my $sep_chars = "";
@@ -225,7 +225,7 @@ btw dvis 'xxxx $key $field_chars $sep_chars $rule_segs @sepsegs\n       @withsep
       };
       # Save the subrefs and debug info
       push @{ $opts->{$key} }, {
-        sub1 => $field_callback, 
+        sub1 => $field_callback,
         sub2 => $separator_callback,
         sep_chars => $sep_chars,
         field_chars => $field_chars,
@@ -233,7 +233,7 @@ btw dvis 'xxxx $key $field_chars $sep_chars $rule_segs @sepsegs\n       @withsep
     }
   }
   $opts->{withseps} = \@withseps;
-}#handle_rulepicture
+}#_handle_rulepicture
 
 use constant MYKEY => "_key_".__PACKAGE__;
 sub new {
@@ -255,9 +255,9 @@ sub new {
       delete $opts{CONTENT_CHAR};
   }
 
-  # Parse the picture. 
+  # Parse the picture.
   # Creates {withseps} and {rule_generators} in %opts
-  handle_rulepicture(\%opts);
+  _handle_rulepicture(\%opts);
 
   my $self = Text::Table::new(__PACKAGE__, @{ $opts{withseps} });
 
@@ -271,10 +271,10 @@ sub new {
 sub _TTBrule {
   my ($key, $self, $ix) = @_;
   $ix //= 0;
-  return undef 
+  return undef
     unless my $list = $self->{MYKEY()}->{"${key}_rule"};
   $list = [ $list ] unless ref($list) eq "ARRAY"; # [ {...}, ... ]
-  return undef 
+  return undef
     if $#$list == -1; # _no_ mid rules at all
   # If asking for a higher index than exists, re-use the last one.
   # This is appropriate for multiple mid_rules.
@@ -293,10 +293,18 @@ sub num_body_rows { $_[0]->num_rows() - 1 }
 
 sub rendered_table_height {
     my $self = shift;
+    my $opts = $self->{MYKEY()};
     return(
-        1                          # the top_rule
-      + $self->table_height()      # data lines
-      + $self->num_rows            # a rule line at the end of each row
+        scalar(@{$opts->{top_rule}})  # 1 or 0 if no top rule
+
+      + $self->table_height()         # data lines
+
+      # Rules after rows.
+      # All but the last row are followed by a mid_rule, iff defined.
+      # The last row is followed by bot_rule, iff defined.
+      + (@{$opts->{mid_rule}} ? ($self->num_rows-1) : 0)
+
+      + scalar(@{$opts->{bot_rule}})  # 1 or 0 if no bot rule
     );
 }
 
@@ -317,10 +325,12 @@ sub add {
 
 sub rendered_title {
     my $self = shift;
-    return ($self->{top_rule},
-            $self->title(),
-            $self->{aftertitle_rule}
-           )
+    my @lines = grep{defined}
+                  $self->top_rule(),
+                  $self->title(),
+                  ($self->mid_rule(0)//$self->bot_rule())
+                ;
+    return (wantarray ? @lines : join("", @lines));
 }
 
 sub rows {
@@ -339,7 +349,7 @@ sub rows {
         my $nextrow_first_lx =
             ($_ == $max_rx ? $self->height() : $row_starts->[$_+1]);
         my $num_lines = $nextrow_first_lx - $first_lx;
- 
+
         my @lines = $self->table($first_lx, $num_lines);
         if ($_with_rules) {
           if ($_ == 0 && defined(my $str = $self->top_rule())) {
@@ -396,7 +406,7 @@ sub rendered_table {
     croak "Negative index not supported\n" if $start_lx < 0 or $num_lines < 0;
 
     my $last_lx = $start_lx + $num_lines - 1;
-    croak "Line index $start_lx+$num_lines-1 is out of range (max=$max_lx)\n" 
+    croak "Line index $start_lx+$num_lines-1 is out of range (max=$max_lx)\n"
       if $last_lx > $max_lx;
 
     # Retrieve rows and flatten result, truncating some lines if appropraite
@@ -411,7 +421,7 @@ btw dvis 'REND($start_lx, $num_lines) $row_starts $max_lx $last_lx $last_rx' if 
     my $first_rx = $start_lx >= $row_starts->[$last_rx]
                      ? $last_rx
                      #: first{ $start_lx < $row_starts->[$_+1] } 0..$last_rx-1 ;
-                     : first{ 
+                     : first{
   #btw '##INfirst last_rx=',vis($last_rx),' $_=',vis($_);
                           $start_lx < $row_starts->[$_+1] } 0..$last_rx-1 ;
 
@@ -423,7 +433,7 @@ btw dvis '##REND.B $last_lx $start_lx $num_lines @lines' if $debug;
 
 btw dvis '##REND.C @lines' if $debug;
     return (wantarray ? @lines : join("", @lines));
-}
+}#rendered_table
 
 sub rendered_body {
     my ($self, $start_lx, $num_lines) = @_;
@@ -534,7 +544,7 @@ Separators should not be included here.
 
 Use a built-in set of separator and rule characters.
 
-=item B<picture> => "Multi\nLine\nString"; 
+=item B<picture> => "Multi\nLine\nString";
 
 =item B<picture> => [ lines ];
 
@@ -542,7 +552,7 @@ Specify separator and rule-line characters using a picture of what you want
 (see example in the SYNOPSIS).
 
 The letter 'c' is a stand-in for cell content; all other characters in
-"data" rows are taken as separators including spaces 
+"data" rows are taken as separators including spaces
 (typically included for padding).
 
 "Rule" lines should be exactly what would be displayed for a table
@@ -551,14 +561,14 @@ the actual table.
 
 The picture must contain at least two columns; with more columns
 different separators may be specified at various horizontal positions
-(however the same separator must be used in every 
+(however the same separator must be used in every
 data row in a given column).
 The separator between the last two columns is re-used if the table has
 more columns than the picture.
 
-Similarly, the picture must contain at least rows and 
+Similarly, the picture must contain at least rows and
 the rule between the last two rows is re-used if the actual table has more
-rows than the picture.  
+rows than the picture.
 Often pictures have three rows to allow a different separator
 between the title row and the first body row.
 
@@ -576,14 +586,18 @@ See "PICTURE SPECIFICATIONS" for examples.
 
 The number of possibly-multiline I<rows> in the body portion of the table.  See B<ROWS> above.
 
-    $numrows = $tb->num_body_rows;
+=item num_rows()
+
+The total number of rows, including the title row.
+
+=item rendered_table_height()
+
+The number of lines in the entire title including rule lines.
 
 =item rendered_title_height()
 
-The number of lines in the title I<row>, including rules before and after
+The number of lines in just the title I<row>, including rules before and after
 (unlike B<title_height()> which only counts non-rule lines).
-
-    $numlines = $tb->rendered_title_height;
 
 =back
 
@@ -647,25 +661,25 @@ after each row.  Row index 0 is the first line of the first body row.
 
 =item top_rule()
 
-=item aftertitle_rule()
-
 =item mid_rule()
 
-=item bottom_rule()
+=item mid_rule($body_row_index)
 
-These return the corresponding rendered rule lines.   
-You normally do not call these yourself because rules are 
+=item bot_rule()
+
+These return the corresponding rendered rule line.
+You normally do not call these yourself because rules are
 automatically included by the "rendered_xxx" methods
 
-C<mid_rule()>
-returns an array ref if more than one mid-rule was in the picture.
+C<mid_rule()> accepts an optional index to retrieve
+other than the first interior rule in the picture.
 
 =back
 
 =head1 PICTURE SPECIFICATIONS
 
 Custom separators and rules are specified as a "picture" built from several
-lines.  Four kinds of rules may be included: 
+lines.  Four kinds of rules may be included:
 
 =over 4
 
@@ -673,21 +687,21 @@ lines.  Four kinds of rules may be included:
 
 =item * Special rule(s) used only at the indicated initial position(s)
 
-=item * Default mid rule, used between other body rows 
+=item * Default mid rule, used between other body rows
 
 =item * Bottom rule (optional)
 
 =back
 
-Pictures must have at least two rows and columns: 
+Pictures must have at least two rows and columns:
 
     ┌───┬───┐   /=======\  ⇦  top rule
     │ c │ c │   | c | c |
     ├───┼───┤   |---+---|  ⇦  default mid rule
-    │ c │ c │   | c | c |     
+    │ c │ c │   | c | c |
     ╘═══╧═══╛   \=======/  ⇦  bottom rule
 
-The letter 'B<I<c>>' is a stand-in for real content. Everything 
+The letter 'B<I<c>>' is a stand-in for real content. Everything
 between 'B<I<c>>'s or at the edge is a separator string.
 
 With more than two picture rows, special rules are used where indicated
@@ -695,7 +709,7 @@ among the upper rows in the table.
 The last interior rule is the "default" rule, used between further rows
 if there are any.  And analogously for columns:
 
-              ⮦ Left-edge separator 
+              ⮦ Left-edge separator
               ⏐   ⮦ Special separator
               ⏐   ⏐   ⮦ Default separator
               ↓   ↓   ↓   ⮦ Right-edge separator
@@ -704,9 +718,9 @@ if there are any.  And analogously for columns:
     ╞═╬═╪═╡   ╞═══╬═══╪═══╡   |===++===+===|  ⇦  special rule after title
     │c║c│c│   │ c ║ c │ c │   | c || c | c |
     ┝━╋━┿━┥   ┝━━━╋━━━┿━━━┥   |___||___|___|  ⇦  special after 1st body row
-    │c║c│c│   │ c ║ c │ c │   | c || c | c |       
-    ├─╫─┼─┤   ├───╫───┼───┤   |---++---+---|  ⇦  default rule 
-    │c║c│c│   │ c ║ c │ c │   | c || c | c | 
+    │c║c│c│   │ c ║ c │ c │   | c || c | c |
+    ├─╫─┼─┤   ├───╫───┼───┤   |---++---+---|  ⇦  default rule
+    │c║c│c│   │ c ║ c │ c │   | c || c | c |
     ╘═╩═╧═╛   ╘═══╩═══╧═══╛   ==============  ⇦  bottom rule
 
 In the leftmost example, column separators are single characters
@@ -717,9 +731,9 @@ two or three characters each including spaces for padding, e.g. "|␠",
 Outer borders can be omitted:
 
     c║c│c    c ║ c │ c     c | c | c
-    ═╬═╪═   ═══╬═══╪═══   ===+===+=== 
+    ═╬═╪═   ═══╬═══╪═══   ===+===+===
     c║c│c    c ║ c │ c     c | c | c
-    ─╫─┼─   ───╫───┼───   ---+---+--- 
+    ─╫─┼─   ───╫───┼───   ---+---+---
     c║c│c    c ║ c │ c     c | c | c
 
 To get only outer borders, omit the interior rules and use interior
@@ -733,7 +747,7 @@ separators containing only spaces (unless you want cells to touch):
 
 B<RENDERING EXAMPLES>
 
-If there are more actual rows and/or columns than in the picture, 
+If there are more actual rows and/or columns than in the picture,
 the "default" rule and/or column separator is repeated:
 
     Picture    Rendered Actual Table
@@ -752,74 +766,28 @@ the "default" rule and/or column separator is repeated:
 The edge separators are always used, as are the top & bottom rules (if defined),
 even if there are fewer rows or columns than in the picture:
 
-    ┌───┰───┬───┐    ┌───────┐ ⇦  top rule         
-    │ c ║ c │ c │    │Meaning│                     
-    ┝━━━╋━━━┿━━━┥    │of life│                     
-    │ c ║ c │ c │    ┝━━━━━━━┥ ⇦  special after-title rule 
-    ├───╫───┼───┤    │  42   │                     
-    │ c ║ c │ c │    ╘═══════╛ ⇦  bottom rule      
-    ╘═══╩═══╧═══╛                                  
+    ┌───┰───┬───┐    ┌───────┐ ⇦  top rule
+    │ c ║ c │ c │    │Meaning│
+    ┝━━━╋━━━┿━━━┥    │of life│
+    │ c ║ c │ c │    ┝━━━━━━━┥ ⇦  special after-title rule
+    ├───╫───┼───┤    │  42   │
+    │ c ║ c │ c │    ╘═══════╛ ⇦  bottom rule
+    ╘═══╩═══╧═══╛
 
-If there is a title row but no body rows, 
+If there is a title row but no body rows,
 only the top and bottom rules are used:
 
     ┌──────╥─────┬────────────┐ ⇦  top rule
     │ NAME ║ AC  │  NUMBER    │
     ╘══════╩═════╧════════════╛ ⇦  bottom rule
 
-If there are no titles or data, nothing is rendered 
+If there are no titles or data, nothing is rendered
 e.g. the object stringifies to "".
 
 =head1 PAGER EXAMPLE
 
-The following pages through a table on a terminal one screenful at a time, ala L<more(1)>.
-The title is repeated at the top of each page, and multi-line rows are kept together on the
-same page if possible:
-
-  my $lines_per_page = get_terminal_rows() - 1; # not counting prompt line
-  my @title_with_rules = $tb->rendered_title();
-  my $lines_after_title = $lines_per_page - @title_with_rules;
-  my $num_rows = $tb->num_body_rows();
-
-  my $ln_remaining = $lines_per_page;
-  my $title_visible = 0;
-  TOP:
-  for my $rx (0..$num_rows-1) {
-      my $aref = $tb->rendered_body_rows($rx, 1);
-      for my $i (0..$#$aref) {
-          if ($i == 0 && $rx != 0) { # start of row other than the first
-              if (( # need title first but it's impossible or pointless to show
-                    # it on the curent page
-                    !$title_visible && @title_with_rules+@$aref > $ln_remaining
-                  )
-                  ||
-                  ( # row won't fit on this page but will fit on a new page
-                    @$aref > $ln_remaining && @$aref <= $lines_after_title
-                  )
-                 )
-              {
-                  while ($ln_remaining > 0) { print "\n"; --$ln_remaining; } #skip
-              }
-          }
-          if ($ln_remaining==0) {
-              print "Press ENTER to continue or q<ENTER> to stop: ";
-              STDOUT->flush;
-              last TOP if <STDIN> =~ /[qQ]/;
-              $ln_remaining = $lines_per_page;
-              $title_visible = 0;
-          }
-          if ($i==0 && !$title_visible) { # need title first
-              die "bug" if $ln_remaining < @title_with_rules;
-              print @title_with_rules;
-              $ln_remaining -= @title_with_rules;
-              $title_visible = 1;
-          }
-          die "bug" if $ln_remaining <= 0;
-          print $aref->[$i];
-          --$ln_remaining;
-      }
-  }
-  print "Done.\n";
+Please see L<Text::Table::Boxed::Pager> for an example of using B<rows> to view a table on a terminal,
+keeping multi-lines rows together when possible.
 
 =head1 ACKNOWLEDGMENTS
 
@@ -843,6 +811,10 @@ Jim Avera (jim.avera at gmail)
 CC0 or Public Domain.
 However your application is likely subject to the more restrictive licenses
 of Text::Table and other modules.
+
+=for Pod::Coverage add new rendered_rows rows
+
+=for Pod::Coverage btw btwN oops
 
 =cut
 1;
