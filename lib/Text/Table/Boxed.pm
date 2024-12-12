@@ -148,8 +148,8 @@ btw dvis 'BEFORE PIC-LEN-ADJ: $num_cols $pic_cols @sepsegs\n@top_rule\n@mid_rule
     #             ^^^^^^^^^^ #replicate or delete these
     #             $#-2   $#-1  $#
     if ($pic_cols < $num_cols) {
-      croak "Picture must have three columns if data has >= three columns\n"
-        if $pic_cols < 3; # no separator to replicate
+      croak "Picture must have at least two columns\n"
+        if $pic_cols < 2; # no separator to replicate
       foreach (\@sepsegs, @top_rule, @mid_rule, @bot_rule) {
         splice @$_, $#$_, 0, @$_[$#$_-2..$#$_-1];
       }
