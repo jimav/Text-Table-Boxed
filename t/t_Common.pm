@@ -171,7 +171,9 @@ sub import {
   Guard->import::into($target, qw(scope_guard guard));
 
   use Data::Dumper::Interp 7.009 ();
-  { no warnings 'once';
+  unless (Cwd::abs_path(__FILE__) =~ /Data-Dumper-Interp/) {
+    # Unless we are testing DDI
+    no warnings 'once';
     # Don't follow overloads e.g. stringify
     $Data::Dumper::Interp::Objects = {overloads => "ignore"};
   }

@@ -1,5 +1,7 @@
  strict; use warnings FATAL => 'all';
-use v5.10;
+use v5.20; # signatures
+no warnings "experimental::lexical_subs";
+use feature qw/say state lexical_subs/;
 use utf8;
 # vi:set ai expandtab ts=4:
 
@@ -7,6 +9,7 @@ use utf8;
 # https://stackoverflow.com/questions/30762521/how-can-i-print-a-table-with-multi-line-strings-using-the-texttable-module
 
 package Text::Table::Boxed;
+require Text::Table; # old versions of 'base' don't auto-require?
 use base 'Text::Table';
 
 { no strict 'refs'; ${__PACKAGE__."::VER"."SION"} = 997.999; }
