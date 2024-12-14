@@ -26,7 +26,7 @@ use overload (
     '""' => 'rendered_stringify',
 );
 
-use Data::Dumper::Interp qw/visnew ivis dvis vis avis u/;
+use Data::Dumper::Interp 7.010 qw/visnew ivis dvis vis avis u/;
 
 use warnings::register;  # creates category name same as __PACKAGE__
 
